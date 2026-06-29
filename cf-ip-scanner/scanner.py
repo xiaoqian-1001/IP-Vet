@@ -1,10 +1,10 @@
 import asyncio
 import aiohttp
-import ipaddress
 import time
 import ssl
 import random
 import logging
+import re
 from typing import List, Dict, Optional, Set
 
 logger = logging.getLogger("scanner")
@@ -31,10 +31,6 @@ CF_DATACENTERS = [
     "ZAG", "ZRH",
 ]
 
-WIDE_PORTS = [80, 443, 8080, 8443, 2052, 2053, 2082, 2083, 2086, 2087, 2095, 2096]
-DEFAULT_TLS_PORT = 443
-DEFAULT_NO_TLS_PORT = 80
-
 SCAN_CONCURRENCY = 200
 TCP_TIMEOUT = 3
 SPEED_TEST_SIZE = 65536
@@ -48,6 +44,8 @@ HTTP_REQUEST_TEMPLATE = (
     "Connection: close\r\n"
     "\r\n"
 )
+
+ENTRY_PATTERN = re.compile(r"^((?:\d{1,3}\.){3}\d{1,3}|(?:[0-9a-fA-F:]+)):(\d+)(?:#(\w+))?$")
 
 
 class Scanner:
@@ -87,71 +85,83 @@ class Scanner:
                     for line in text.splitlines()
                     if line.strip() and not line.startswith("#")
                 ]
-                logger.info(f"成功拉取 {len(lines)} 行 IP 数据")
+                logger.info(f"成功拉取 {len(lines)} 行数据")
                 return lines
         except Exception as e:
             logger.error(f"拉取 IP 库失败: {e}")
             raise
 
-    def parse_cidr(self, lines: List[str]) -> Dict[str, List[str]]:
-        ipv4_ranges: Set[str] = set()
-        ipv6_ranges: Set[str] = set()
-
+    def parse_entries(self, lines: List[str]) -> List[Dict]:
+        entries: List[Dict] = []
+        dc_set: Set[str] = set()
         for line in lines:
-            line = line.strip()
-            if not line or line.startswith("#"):
+            m = ENTRY_PATTERN.match(line)
+            if not m:
                 continue
-            try:
-                net = ipaddress.ip_network(line, strict=False)
-                if net.version == 4:
-                    ipv4_ranges.add(str(net))
-                else:
-                    ipv6_ranges.add(str(net))
-            except ValueError:
-                logger.warning(f"跳过无效 CIDR: {line}")
-                continue
+            ip = m.group(1)
+            port = int(m.group(2))
+            dc = m.group(3) or "UNK"
+            entries.append({"ip": ip, "port": port, "datacenter": dc})
+            if dc != "UNK":
+                dc_set.add(dc)
 
-        logger.info(f"解析完成: IPv4 {len(ipv4_ranges)} 段, IPv6 {len(ipv6_ranges)} 段")
-        return {"ipv4": sorted(ipv4_ranges), "ipv6": sorted(ipv6_ranges)}
+        logger.info(f"解析完成: {len(entries)} 条 IP 记录, {len(dc_set)} 个数据中心")
+        return entries
 
-    def generate_ips(
-        self, ranges: List[str], max_per_range: int = 256, total_limit: int = 5000
-    ) -> List[str]:
-        ips: List[str] = []
-        for cidr in ranges:
-            if len(ips) >= total_limit:
+    def get_datacenters(self, entries: List[Dict]) -> List[str]:
+        dcs = sorted(set(e["datacenter"] for e in entries if e["datacenter"] != "UNK"))
+        dc_map = {dc: True for dc in dcs}
+        for dc in CF_DATACENTERS:
+            if dc not in dc_map:
+                dcs.append(dc)
+        return sorted(dcs)
+
+    def filter_entries(
+        self,
+        entries: List[Dict],
+        ip_version: str = "ipv4",
+        datacenter: str = "all",
+        port_mode: str = "default",
+        custom_port: Optional[int] = None,
+        max_count: int = 5000,
+    ) -> List[Dict]:
+        result: List[Dict] = []
+        seen: Set[str] = set()
+
+        for e in entries:
+            if len(result) >= max_count:
                 break
-            try:
-                net = ipaddress.ip_network(cidr, strict=False)
-                all_hosts = (
-                    list(net.hosts()) if net.num_addresses > 2 else [net.network_address]
-                )
-                if len(all_hosts) > max_per_range:
-                    step = max(1, len(all_hosts) // max_per_range)
-                    sampled = all_hosts[::step][:max_per_range]
-                else:
-                    sampled = all_hosts
-                ips.extend(str(ip) for ip in sampled)
-            except ValueError:
+
+            ip = e["ip"]
+            port = e["port"]
+            dc = e["datacenter"]
+
+            is_v4 = ":" not in ip
+            if ip_version == "ipv4" and not is_v4:
+                continue
+            if ip_version == "ipv6" and is_v4:
                 continue
 
-        random.shuffle(ips)
-        ips = ips[:total_limit]
-        logger.info(f"生成 {len(ips)} 个待扫描 IP")
-        return ips
+            if datacenter != "all" and dc.upper() != datacenter.upper():
+                continue
 
-    def _get_ports(self, tls: bool, port_mode: str, custom_port: Optional[int]) -> List[int]:
-        if port_mode == "custom" and custom_port:
-            return [custom_port]
-        elif port_mode == "wide":
-            return list(WIDE_PORTS)
-        elif port_mode == "random":
-            return [random.choice(WIDE_PORTS)]
-        else:
-            return [DEFAULT_TLS_PORT if tls else DEFAULT_NO_TLS_PORT]
+            scan_port = port
+            if port_mode == "custom" and custom_port:
+                scan_port = custom_port
+
+            key = f"{ip}:{scan_port}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            result.append({"ip": ip, "port": scan_port, "datacenter": dc})
+
+        random.shuffle(result)
+        logger.info(f"过滤后 {len(result)} 个待扫描目标")
+        return result
 
     async def scan_single(self, ip: str, port: int, tls: bool) -> Optional[Dict]:
-        connect_time = time.monotonic()
+        connect_start = time.monotonic()
         try:
             ssl_ctx = self._get_ssl_context() if tls else None
             reader, writer = await asyncio.wait_for(
@@ -162,7 +172,6 @@ class Scanner:
             return None
 
         try:
-            # Measure HTTP round-trip and download speed
             req_start = time.monotonic()
             writer.write(HTTP_REQUEST_TEMPLATE.encode())
             await writer.drain()
@@ -189,15 +198,12 @@ class Scanner:
                         buf = bytearray()
                     if len(data) >= SPEED_TEST_SIZE:
                         break
-                    if data:
-                        bytes_so_far = len(data)
-                        if bytes_so_far >= 1024 and len(chunk) < 100:
-                            break
+                    if data and len(data) >= 1024 and len(chunk) < 100:
+                        break
             except asyncio.TimeoutError:
                 pass
 
             download_duration = time.monotonic() - req_start
-
             if download_duration <= 0:
                 return None
 
@@ -206,7 +212,7 @@ class Scanner:
                 return None
 
             bandwidth_mbps = (total_bytes * 8) / (download_duration * 1_000_000)
-            latency_ms = (time.monotonic() - connect_time) * 1000
+            latency_ms = (time.monotonic() - connect_start) * 1000
 
             return {
                 "ip": ip,
@@ -214,7 +220,7 @@ class Scanner:
                 "bandwidth": round(bandwidth_mbps, 2),
                 "latency": round(latency_ms, 1),
                 "packetLoss": 0,
-                "datacenter": "UNK",
+                "datacenter": None,
                 "passed": True,
             }
         except Exception:
@@ -250,57 +256,53 @@ class Scanner:
             return []
 
         if progress_callback:
-            await progress_callback("parsing", "正在解析 CIDR 网段...")
+            await progress_callback("parsing", "正在解析 IP 数据...")
 
-        parsed = self.parse_cidr(raw_lines)
-        ranges = parsed.get(ip_version, [])
-        if not ranges:
+        entries = self.parse_entries(raw_lines)
+        if not entries:
             if progress_callback:
-                await progress_callback("error", f"未找到 {ip_version.upper()} 网段")
+                await progress_callback("error", "未解析到有效 IP 记录")
             return []
 
-        ips = self.generate_ips(ranges)
-        ports = self._get_ports(tls, port_mode, custom_port)
+        targets = self.filter_entries(entries, ip_version, datacenter, port_mode, custom_port)
+        if not targets:
+            if progress_callback:
+                await progress_callback("error", f"过滤后无匹配目标 ({ip_version.upper()})")
+            return []
 
         if progress_callback:
             await progress_callback(
-                "scanning", f"开始扫描 {len(ips)} 个 IP ({ip_version.upper()})..."
+                "scanning",
+                f"开始扫描 {len(targets)} 个目标 ({ip_version.upper()}{', DC=' + datacenter if datacenter != 'all' else ''})...",
             )
 
-        total = len(ips) * len(ports)
+        total = len(targets)
         completed = 0
         valid_results: List[Dict] = []
-        all_results: List[Dict] = []
         semaphore = asyncio.Semaphore(SCAN_CONCURRENCY)
 
-        async def scan_one(ip: str, port: int):
+        async def scan_one(target: Dict):
             nonlocal completed
             if self.stop_flag:
                 return
             async with semaphore:
                 if self.stop_flag:
                     return
-                r = await self.scan_single(ip, port, tls)
+                r = await self.scan_single(target["ip"], target["port"], tls)
                 completed += 1
                 if r:
-                    all_results.append(r)
+                    r["datacenter"] = target["datacenter"]
                     valid_results.append(r)
                 if progress_callback and completed % 10 == 0:
                     await progress_callback("progress", {
                         "current": completed,
                         "total": total,
-                        "ip": ip,
-                        "port": port,
+                        "ip": target["ip"],
+                        "port": target["port"],
                         "valid": len(valid_results),
                     })
 
-        tasks = []
-        for ip in ips:
-            if self.stop_flag:
-                break
-            for port in ports:
-                tasks.append(scan_one(ip, port))
-
+        tasks = [scan_one(t) for t in targets]
         await asyncio.gather(*tasks, return_exceptions=True)
 
         if progress_callback:
@@ -323,7 +325,7 @@ class Scanner:
                 "results": top_results,
                 "total_scanned": completed,
                 "valid_count": len(valid_results),
-                "total_count": len(all_results),
+                "total_count": completed,
             })
 
         await self.close()

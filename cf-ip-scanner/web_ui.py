@@ -111,15 +111,13 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
       </div>
     </div>
     <div class="form-row">
-      <span class="form-label">端口模式</span>
+      <span class="form-label">端口</span>
       <div class="form-control">
         <select id="portMode">
-          <option value="default">默认端口 (443/80)</option>
-          <option value="wide">宽端口</option>
-          <option value="random">随机端口</option>
-          <option value="custom">自定义端口</option>
+          <option value="default">列表端口</option>
+          <option value="custom">指定端口</option>
         </select>
-        <input type="number" id="customPort" placeholder="端口" style="display:none;width:100px;flex-shrink:0" min="1" max="65535">
+        <input type="number" id="customPort" placeholder="443" style="display:none;width:100px;flex-shrink:0" min="1" max="65535" value="443">
       </div>
     </div>
     <div class="form-row">
@@ -357,9 +355,7 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
     customPort.style.display = portMode.value === "custom" ? "inline-block" : "none";
   });
 
-  btnRefreshDC.addEventListener("click", function() {
-    btnRefreshDC.disabled = true;
-    btnRefreshDC.textContent = "刷新中...";
+  function loadDatacenters() {
     fetch("/api/datacenters")
       .then(function(r){ return r.json(); })
       .then(function(data){
@@ -370,15 +366,21 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
           opt.textContent = dc;
           dcSelect.appendChild(opt);
         });
-        btnRefreshDC.textContent = "刷新";
-        btnRefreshDC.disabled = false;
       })
-      .catch(function(){
-        btnRefreshDC.textContent = "刷新";
-        btnRefreshDC.disabled = false;
-      });
+      .catch(function(){});
+  }
+
+  btnRefreshDC.addEventListener("click", function() {
+    btnRefreshDC.disabled = true;
+    btnRefreshDC.textContent = "刷新中...";
+    loadDatacenters();
+    setTimeout(function(){
+      btnRefreshDC.textContent = "刷新";
+      btnRefreshDC.disabled = false;
+    }, 3000);
   });
 
+  loadDatacenters();
   connectWS();
 })();
 </script>

@@ -18,7 +18,16 @@ async def index():
 
 @app.get("/api/datacenters")
 async def get_datacenters():
-    return {"datacenters": sorted(CF_DATACENTERS)}
+    scanner = Scanner()
+    try:
+        raw = await scanner.fetch_ip_list()
+        entries = scanner.parse_entries(raw)
+        dcs = scanner.get_datacenters(entries)
+    except Exception:
+        dcs = sorted(CF_DATACENTERS)
+    finally:
+        await scanner.close()
+    return {"datacenters": dcs}
 
 
 @app.websocket("/ws")
