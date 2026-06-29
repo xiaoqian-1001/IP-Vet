@@ -213,6 +213,8 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
       progressBar.style.width = "0%";
       progressDetail.textContent = "--";
       progressSpeed.textContent = "--";
+    } else if (phase === "status") {
+      progressText.textContent = data;
     } else if (phase === "error") {
       progressText.textContent = data;
       progressStatus.innerHTML = '<span style="color:#f85149">&#10007;</span><span>' + data + '</span>';
@@ -222,21 +224,27 @@ body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFo
     } else if (phase === "scanning") {
       progressText.textContent = data;
       progressBar.style.width = "0%";
-      progressDetail.textContent = "0 / 0";
+      progressDetail.textContent = "已收集 0 / 0";
       progressSpeed.textContent = "--";
       startTime = Date.now();
     } else if (phase === "progress") {
-      var pct = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
-      progressBar.style.width = pct + "%";
-      progressText.textContent = "正在扫描: " + data.ip + ":" + data.port;
-      progressDetail.textContent = data.current + " / " + data.total;
-      progressSpeed.textContent = "有效: " + data.valid;
+      var pct = data.pool_size > 0 ? Math.round(data.scanned / data.pool_size * 100) : 0;
+      progressBar.style.width = Math.min(pct, 100) + "%";
+      progressText.textContent = "已扫描 " + (data.scanned || 0) + " 个, 合格 " + (data.found || 0) + " 个";
+      progressDetail.textContent = "已收集 " + (data.found || 0) + " / " + (data.target || 0);
+      progressSpeed.textContent = "候选池 " + (data.pool_size || 0) + " 个";
+    } else if (phase === "found") {
+      progressText.textContent = data.ip + ":" + data.port + "  带宽 " + (data.bandwidth || 0).toFixed(1) + " Mbps";
+      progressDetail.textContent = "已收集 " + (data.found || 0) + " / " + (data.target || 0);
+      progressSpeed.textContent = "DC: " + (data.datacenter || "UNK") + " | 已扫描 " + (data.scanned || 0);
+      var pct = data.pool_size > 0 ? Math.round(data.scanned / data.pool_size * 100) : 0;
+      progressBar.style.width = Math.min(pct, 100) + "%";
     } else if (phase === "complete") {
       var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       progressBar.style.width = "100%";
       progressText.textContent = "扫描完成";
       progressStatus.innerHTML = '<span style="color:#3fb950">&#10003;</span><span>扫描完成 (' + elapsed + 's)</span>';
-      progressDetail.textContent = "共扫描 " + (data.total_scanned || 0) + " 个目标, 有效 " + (data.valid_count || 0) + " 个";
+      progressDetail.textContent = "共扫描 " + (data.scanned || 0) + " 个目标, 收集 " + ((data.results || []).length) + " 个优质 IP";
       progressSpeed.textContent = "";
 
       scanning = false;
