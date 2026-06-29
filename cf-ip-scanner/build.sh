@@ -16,7 +16,7 @@ pip3 install -r requirements.txt
 
 echo
 echo "[2/3] PyInstaller 打包为单文件..."
-pyinstaller --onefile --name cfipgui --console main.py
+pyinstaller --onefile --name cfipgui --console --hidden-import server --hidden-import web_ui --hidden-import scanner --hidden-import aiohttp main.py
 
 echo
 echo "[3/3] 构建完成!"

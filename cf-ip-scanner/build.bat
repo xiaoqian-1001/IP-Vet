@@ -24,7 +24,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [2/3] Building single-file exe...
-pyinstaller --onefile --name cfipgui --console main.py
+pyinstaller --onefile --name cfipgui --console --hidden-import server --hidden-import web_ui --hidden-import scanner --hidden-import aiohttp main.py
 if %errorlevel% neq 0 (
     echo [ERROR] Build failed
     pause

@@ -3,6 +3,10 @@ import os
 import logging
 import uvicorn
 
+import server
+import web_ui
+import scanner
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -33,7 +37,7 @@ def main():
 
     try:
         uvicorn.run(
-            "server:app",
+            server.app,
             host=HOST,
             port=PORT,
             log_level="warning",
